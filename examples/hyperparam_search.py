@@ -43,8 +43,8 @@ def generate_combinations(
 
 def main(config):
     ent_coef_search = [0.01]
-    lr_search = [0.00025]
-    transition_model_lr_search = [0.0001]
+    lr_search = [0.00001, 0.00025]
+    transition_model_lr_search = [0.0001, 0.001]
     max_grad_norm_search = [0.5]
     schedule_accelerator_search = [1.0]
     (
@@ -75,7 +75,7 @@ def main(config):
         ],
         axis=1,
     )
-    NUMBER_OF_SEEDS = 10
+    NUMBER_OF_SEEDS = 5
 
     rng = jax.random.PRNGKey(NUMBER_OF_SEEDS * len(combinations))
     rngs = jax.random.split(rng, NUMBER_OF_SEEDS)
