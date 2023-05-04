@@ -2,6 +2,7 @@ from typing import NamedTuple, Sequence
 
 import distrax
 import flax.linen as nn
+import jax
 import jax.numpy as jnp
 import numpy as np
 from flax.linen.initializers import constant, orthogonal
@@ -50,9 +51,15 @@ class TransitionModel(nn.Module):
 
     @nn.compact
     def __call__(self, inputs):
-        x = nn.relu(nn.Dense(1024)(inputs))
-        x = nn.relu(nn.Dense(1024)(x))
-        x = nn.relu(nn.Dense(1024)(x))
+        # inputs /= jnp.array([10, 1, 1, 1, 1])
+        # x_0 = nn.Dense(self.state_dim)(inputs[..., : -1])
+        # x_1 = nn.Dense(self.state_dim)(inputs[..., : -1])
+        # x_0 *= inputs[..., -1:] # if zero == 0, if one == 1
+        # x_1 *= (inputs[..., -1:] - 1) ** 2 # if zero == 1, if one == 0
+        # pred = x_0 + x_1
+        x = nn.relu(nn.Dense(256)(inputs))
+        x = nn.relu(nn.Dense(256)(x))
+        x = nn.relu(nn.Dense(256)(x))
         pred = nn.Dense(self.state_dim)(x)
         return pred
 

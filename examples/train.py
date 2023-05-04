@@ -11,12 +11,6 @@ from utils import ActorCritic, Transition, TransitionModel
 
 
 def make_train(config):
-    config["NUM_UPDATES"] = (
-        config["TOTAL_TIMESTEPS"] // config["NUM_STEPS"] // config["NUM_ENVS"]
-    )
-    config["MINIBATCH_SIZE"] = (
-        config["NUM_ENVS"] * config["NUM_STEPS"] // config["NUM_MINIBATCHES"]
-    )
     env, env_params = gymnax.make(config["ENV_NAME"])
     env = FlattenObservationWrapper(env)
     env = LogWrapper(env)
@@ -28,6 +22,7 @@ def make_train(config):
             transition_model_lr = config["TRANSITION_MODEL_LR"]
             max_grad_norm = config["MAX_GRAD_NORM"]
             schedule_accelerator = config["SCHEDULE_ACCELERATOR"]
+            num_minibatches = config["NUM_MINIBATCHES"]
         else:
             (
                 lr,
@@ -35,12 +30,32 @@ def make_train(config):
                 transition_model_lr,
                 max_grad_norm,
                 schedule_accelerator,
-            ) = combinations
+                _,
+                _,
+                _,
+            ) = (
+                combinations[0],
+                combinations[1],
+                combinations[2],
+                combinations[3],
+                combinations[4],
+                combinations[5],
+                combinations[6],
+                combinations[7],
+            )
+            num_minibatches = config["NUM_MINIBATCHES"]
+
+        config["NUM_UPDATES"] = (
+            config["TOTAL_TIMESTEPS"] // config["NUM_STEPS"] // config["NUM_ENVS"]
+        )
+        config["MINIBATCH_SIZE"] = (
+            config["NUM_ENVS"] * config["NUM_STEPS"] // num_minibatches
+        )
 
         def linear_schedule(count):
-            frac = 1.0 - (
-                count // (config["NUM_MINIBATCHES"] * config["UPDATE_EPOCHS"])
-            ) / (config["NUM_UPDATES"])
+            frac = 1.0 - (count // (num_minibatches * config["UPDATE_EPOCHS"])) / (
+                config["NUM_UPDATES"] * schedule_accelerator
+            )
             return lr * frac
 
         # INIT NETWORK
@@ -70,12 +85,15 @@ def make_train(config):
             )
         else:
             tx = optax.chain(
-                optax.clip_by_global_norm(max_grad_norm), optax.adam(lr, eps=1e-5),
+                optax.clip_by_global_norm(max_grad_norm),
+                optax.adam(lr, eps=1e-5),
             )
         tx_forward_transition_model = optax.adam(learning_rate=transition_model_lr)
         tx_backward_transition_model = optax.adam(learning_rate=transition_model_lr)
         train_state = TrainState.create(
-            apply_fn=network.apply, params=network_params, tx=tx,
+            apply_fn=network.apply,
+            params=network_params,
+            tx=tx,
         )
         forward_transition_model_train_state = TrainState.create(
             apply_fn=forward_transition_model.apply,
@@ -143,6 +161,7 @@ def make_train(config):
                 obsv, env_state, reward, done, info = jax.vmap(
                     env.step, in_axes=(0, 0, 0, None)
                 )(rng_step, env_state, action, env_params)
+                obsv /= jnp.array([10, 1, 1, 1])
                 transition = Transition(
                     done, action, value, reward, log_prob, last_obs, obsv, info
                 )
@@ -197,19 +216,145 @@ def make_train(config):
 
             advantages, targets = _calculate_gae(traj_batch, last_val)
 
+            def _update_epoch_transition_model(update_state, unused):
+                def _update_minbatch_forward_transition_model(
+                    forward_transition_model_state,
+                    batch_info,
+                ):
+                    traj_batch, advantages, targets = batch_info
+
+                    def _loss_fn_forward_transition_model(forward_params, traj_batch):
+                        inputs = jnp.concatenate(
+                            [
+                                traj_batch.obs,
+                                jnp.expand_dims(traj_batch.action, axis=1) - 0.5,
+                            ],
+                            axis=-1,
+                        )
+                        preds = forward_transition_model.apply(forward_params, inputs)
+                        targets = traj_batch.next_obs
+                        loss = jnp.square(preds - targets).mean()
+                        return loss
+
+                    grad_fn_forward_transition_model = jax.value_and_grad(
+                        _loss_fn_forward_transition_model, has_aux=False
+                    )
+                    (
+                        total_loss_forward_transition_model,
+                        grads_forward_transition_model,
+                    ) = grad_fn_forward_transition_model(
+                        forward_transition_model_state.params, traj_batch
+                    )
+                    forward_transition_model_state = (
+                        forward_transition_model_state.apply_gradients(
+                            grads=grads_forward_transition_model
+                        )
+                    )
+                    return (
+                        forward_transition_model_state,
+                        total_loss_forward_transition_model,
+                    )
+
+                def _update_minbatch_backward_transition_model(
+                    backward_transition_model_state,
+                    batch_info,
+                ):
+                    traj_batch, advantages, targets = batch_info
+
+                    def _loss_fn_backward_transition_model(backward_params, traj_batch):
+                        inputs = jnp.concatenate(
+                            [
+                                traj_batch.next_obs,
+                                jnp.expand_dims(traj_batch.action, axis=1) - 0.5,
+                            ],
+                            axis=-1,
+                        )
+                        preds = forward_transition_model.apply(backward_params, inputs)
+                        targets = traj_batch.obs
+                        loss = jnp.square(preds - targets).mean()
+                        return loss
+
+                    grad_fn_backward_transition_model = jax.value_and_grad(
+                        _loss_fn_backward_transition_model, has_aux=False
+                    )
+                    (
+                        total_loss_backward_transition_model,
+                        grads_backward_transition_model,
+                    ) = grad_fn_backward_transition_model(
+                        backward_transition_model_state.params, traj_batch
+                    )
+                    backward_transition_model_state = (
+                        backward_transition_model_state.apply_gradients(
+                            grads=grads_backward_transition_model
+                        )
+                    )
+                    return (
+                        backward_transition_model_state,
+                        total_loss_backward_transition_model,
+                    )
+
+                (
+                    train_state,
+                    forward_transition_model_state,
+                    backward_transition_model_state,
+                    traj_batch,
+                    advantages,
+                    targets,
+                    rng,
+                ) = update_state
+                rng, _rng = jax.random.split(rng)
+                #### transition model batches
+                batch_size_transition_model = config["MINIBATCH_SIZE"] * num_minibatches
+                assert (
+                    batch_size_transition_model
+                    == config["NUM_STEPS"] * config["NUM_ENVS"]
+                ), "batch size must be equal to number of steps * number of envs"
+                permutation_transition_model = jax.random.permutation(
+                    _rng, batch_size_transition_model
+                )
+                batch_transition_model = (traj_batch, advantages, targets)
+                batch_transition_model = jax.tree_util.tree_map(
+                    lambda x: x.reshape((batch_size_transition_model,) + x.shape[2:]),
+                    batch_transition_model,
+                )
+                shuffled_batch_transition_model = jax.tree_util.tree_map(
+                    lambda x: jnp.take(x, permutation_transition_model, axis=0),
+                    batch_transition_model,
+                )
+                minibatches_transition_model = jax.tree_util.tree_map(
+                    lambda x: jnp.reshape(x, [num_minibatches, -1] + list(x.shape[1:])),
+                    shuffled_batch_transition_model,
+                )
+                forward_transition_model_state, total_loss = jax.lax.scan(
+                    _update_minbatch_forward_transition_model,
+                    forward_transition_model_state,
+                    minibatches_transition_model,
+                )
+                # jax.debug.print("forward_transition_model_loss: {forward_transition_model_loss}", forward_transition_model_loss=total_loss)
+
+                backward_transition_model_state, total_loss = jax.lax.scan(
+                    _update_minbatch_backward_transition_model,
+                    backward_transition_model_state,
+                    minibatches_transition_model,
+                )
+                update_state = (
+                    train_state,
+                    forward_transition_model_state,
+                    backward_transition_model_state,
+                    traj_batch,
+                    advantages,
+                    targets,
+                    rng,
+                )
+                return update_state, total_loss
+
             # UPDATE NETWORK
-            def _update_epoch(update_state, unused):
+            def _update_epoch_actor_critic(update_state, unused):
                 def _update_minbatch_network(train_state, batch_info):
                     traj_batch, advantages, targets = batch_info
 
                     def _loss_fn(params, traj_batch, gae, targets):
-                        # rerun network
-                        pi, value = network.apply(
-                            params, traj_batch.obs, traj_batch.obs
-                        )
-                        log_prob = pi.log_prob(traj_batch.action)
-
-                        action_test = pi.sample(seed=_rng)
+                        action_test = traj_batch.action
 
                         equivalent_obs = jnp.concatenate(
                             [traj_batch.obs, jnp.expand_dims(action_test, axis=1)],
@@ -275,76 +420,6 @@ def make_train(config):
                     train_state = train_state.apply_gradients(grads=grads)
                     return train_state, total_loss
 
-                def _update_minbatch_forward_transition_model(
-                    forward_transition_model_state, batch_info,
-                ):
-                    traj_batch, advantages, targets = batch_info
-
-                    def _loss_fn_forward_transition_model(forward_params, traj_batch):
-                        inputs = jnp.concatenate(
-                            [
-                                traj_batch.obs,
-                                jnp.expand_dims(traj_batch.action, axis=1) - 0.5,
-                            ],
-                            axis=-1,
-                        )
-                        preds = forward_transition_model.apply(forward_params, inputs)
-                        targets = traj_batch.next_obs
-                        loss = jnp.square(preds - targets).mean()
-                        return loss
-
-                    grad_fn_forward_transition_model = jax.value_and_grad(
-                        _loss_fn_forward_transition_model, has_aux=False
-                    )
-                    (
-                        total_loss_forward_transition_model,
-                        grads_forward_transition_model,
-                    ) = grad_fn_forward_transition_model(
-                        forward_transition_model_state.params, traj_batch
-                    )
-                    forward_transition_model_state = forward_transition_model_state.apply_gradients(
-                        grads=grads_forward_transition_model
-                    )
-                    return (
-                        forward_transition_model_state,
-                        total_loss_forward_transition_model,
-                    )
-
-                def _update_minbatch_backward_transition_model(
-                    backward_transition_model_state, batch_info,
-                ):
-                    traj_batch, advantages, targets = batch_info
-
-                    def _loss_fn_backward_transition_model(backward_params, traj_batch):
-                        inputs = jnp.concatenate(
-                            [
-                                traj_batch.next_obs,
-                                jnp.expand_dims(traj_batch.action, axis=1) - 0.5,
-                            ],
-                            axis=-1,
-                        )
-                        preds = forward_transition_model.apply(backward_params, inputs)
-                        targets = traj_batch.obs
-                        loss = jnp.square(preds - targets).mean()
-                        return loss
-
-                    grad_fn_backward_transition_model = jax.value_and_grad(
-                        _loss_fn_backward_transition_model, has_aux=False
-                    )
-                    (
-                        total_loss_backward_transition_model,
-                        grads_backward_transition_model,
-                    ) = grad_fn_backward_transition_model(
-                        backward_transition_model_state.params, traj_batch
-                    )
-                    backward_transition_model_state = backward_transition_model_state.apply_gradients(
-                        grads=grads_backward_transition_model
-                    )
-                    return (
-                        backward_transition_model_state,
-                        total_loss_backward_transition_model,
-                    )
-
                 (
                     train_state,
                     forward_transition_model_state,
@@ -357,7 +432,7 @@ def make_train(config):
                 rng, _rng = jax.random.split(rng)
 
                 #### RL batches
-                batch_size = config["MINIBATCH_SIZE"] * config["NUM_MINIBATCHES"]
+                batch_size = config["MINIBATCH_SIZE"] * num_minibatches
                 assert (
                     batch_size == config["NUM_STEPS"] * config["NUM_ENVS"]
                 ), "batch size must be equal to number of steps * number of envs"
@@ -370,43 +445,12 @@ def make_train(config):
                     lambda x: jnp.take(x, permutation, axis=0), batch
                 )
                 minibatches = jax.tree_util.tree_map(
-                    lambda x: jnp.reshape(
-                        x, [config["NUM_MINIBATCHES"], -1] + list(x.shape[1:])
-                    ),
+                    lambda x: jnp.reshape(x, [num_minibatches, -1] + list(x.shape[1:])),
                     shuffled_batch,
                 )
                 train_state, total_loss = jax.lax.scan(
-                    _update_minbatch_network, train_state, minibatches,
-                )
-
-                #### transition model batches
-                batch_size = config["MINIBATCH_SIZE"] * config["NUM_MINIBATCHES"]
-                assert (
-                    batch_size == config["NUM_STEPS"] * config["NUM_ENVS"]
-                ), "batch size must be equal to number of steps * number of envs"
-                permutation = jax.random.permutation(_rng, batch_size)
-                batch = (traj_batch, advantages, targets)
-                batch = jax.tree_util.tree_map(
-                    lambda x: x.reshape((batch_size,) + x.shape[2:]), batch
-                )
-                shuffled_batch = jax.tree_util.tree_map(
-                    lambda x: jnp.take(x, permutation, axis=0), batch
-                )
-                minibatches = jax.tree_util.tree_map(
-                    lambda x: jnp.reshape(
-                        x, [config["NUM_MINIBATCHES"] * 8, -1] + list(x.shape[1:])
-                    ),
-                    shuffled_batch,
-                )
-                forward_transition_model_state, total_loss = jax.lax.scan(
-                    _update_minbatch_forward_transition_model,
-                    forward_transition_model_state,
-                    minibatches,
-                )
-
-                backward_transition_model_state, total_loss = jax.lax.scan(
-                    _update_minbatch_backward_transition_model,
-                    backward_transition_model_state,
+                    _update_minbatch_network,
+                    train_state,
                     minibatches,
                 )
                 update_state = (
@@ -418,6 +462,7 @@ def make_train(config):
                     targets,
                     rng,
                 )
+                # jax.debug.print("total_loss {x}", x=total_loss)
                 return update_state, total_loss
 
             update_state = (
@@ -429,8 +474,14 @@ def make_train(config):
                 targets,
                 rng,
             )
-            update_state, loss_info = jax.lax.scan(
-                _update_epoch, update_state, None, config["UPDATE_EPOCHS"]
+            update_state, _ = jax.lax.scan(
+                _update_epoch_actor_critic, update_state, None, config["UPDATE_EPOCHS"]
+            )
+            update_state, _ = jax.lax.scan(
+                _update_epoch_transition_model,
+                update_state,
+                None,
+                config["UPDATE_EPOCHS"] * 32,
             )
             train_state = update_state[0]
             metric = traj_batch.info
