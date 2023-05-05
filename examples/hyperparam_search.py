@@ -70,15 +70,15 @@ def main(config):
     print("config", config)
     ent_coef_search = [0.001]
     # ent_coef_search = [config["ENT_COEF"]]
-    lr_search = [0.0025, 0.00025, 0.000025]
+    lr_search = [0.0025]  # , 0.00025, 0.000025]
     # lr_search = [config["LR"]]
     transition_model_lr_search = [1e-4]
-    max_grad_norm_search = [5, 0.5, 0.05]
+    max_grad_norm_search = [0.5]  # [5, 0.5, 0.05]
     # max_grad_norm_search = [config["MAX_GRAD_NORM"]]
     schedule_accelerator_search = [1.0]
     num_envs = [config["NUM_ENVS"]]
     num_minibatches = [config["NUM_MINIBATCHES"]]
-    clip_eps = [0.02, 0.2, 2]
+    clip_eps = [0.02]  # [0.02, 0.2, 2]
     # clip_eps = [config["CLIP_EPS"]]
     (
         lr_combinations,
@@ -118,7 +118,7 @@ def main(config):
         clips_eps_combinations,
     ]
 
-    NUMBER_OF_SEEDS = 25
+    NUMBER_OF_SEEDS = 1000
     # num_minibatches_combinations = jnp.ones([81,], dtype=jnp.int32) * 2
 
     rng = jax.random.PRNGKey(NUMBER_OF_SEEDS * len(combinations))
@@ -164,11 +164,19 @@ def main(config):
         }
         config.update(new_config)
 
-        # wandb.init(project="purejaxrl", entity="self-supervisor", config=config, group=group)
-        # list_to_log = [j.item() for j in outs["metrics"]["returned_episode_returns"][i].mean(0).mean(-1).reshape(-1)]
-        # for a_val_to_log in list_to_log:
-        #     wandb.log({"episode_returns": a_val_to_log})
-        # wandb.finish()
+        wandb.init(
+            project="purejaxrl", entity="self-supervisor", config=config, group=group
+        )
+        list_to_log = [
+            j.item()
+            for j in outs["metrics"]["returned_episode_returns"][i]
+            .mean(0)
+            .mean(-1)
+            .reshape(-1)
+        ]
+        for a_val_to_log in list_to_log:
+            wandb.log({"episode_returns": a_val_to_log})
+        wandb.finish()
 
         plt.plot(
             outs["metrics"]["returned_episode_returns"][i].mean(0).mean(-1).reshape(-1),

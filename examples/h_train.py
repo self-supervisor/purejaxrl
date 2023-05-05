@@ -7,7 +7,7 @@ import optax
 from flax.training.train_state import TrainState
 from gymnax.wrappers.purerl import FlattenObservationWrapper, LogWrapper
 
-from utils import ActorCritic, Transition, TransitionModel
+from utils import HActorCritic, Transition, TransitionModel
 
 # from gymnax code
 def save_pkl_object(obj, filename):
@@ -33,6 +33,7 @@ def load_pkl_object(filename: str):
         obj = pickle.load(input)
     print(f"Loaded data from {filename}.")
     return obj
+
 
 def make_train(config):
     env, env_params = gymnax.make(config["ENV_NAME"])
@@ -83,13 +84,13 @@ def make_train(config):
             return lr * frac
 
         # INIT NETWORK
-        network = ActorCritic(
+        network = HActorCritic(
             env.action_space(env_params).n, activation=config["ACTIVATION"]
         )
         forward_transition_model = TransitionModel()
-            # state_dim=env.observation_space(env_params).shape[0]
+        # state_dim=env.observation_space(env_params).shape[0]
         backward_transition_model = TransitionModel()
-            # state_dim=env.observation_space(env_params).shape[0]
+        # state_dim=env.observation_space(env_params).shape[0]
         rng, _rng = jax.random.split(rng)
         init_x = jnp.zeros(env.observation_space(env_params).shape)
         network_params = network.init(_rng, init_x, init_x)
@@ -97,8 +98,12 @@ def make_train(config):
         # forward_transition_model_params = forward_transition_model.init(
         #     _rng, init_transition
         # )
-        forward_transition_model_params = load_pkl_object("forward_model.pkl")["params"] #forward_transition_model.init(_rng, init_transition)
-        backward_transition_model_params = load_pkl_object("backward_model.pkl")["params"] #backward_transition_model.init(_rng, init_transition)
+        forward_transition_model_params = load_pkl_object("forward_model.pkl")[
+            "params"
+        ]  # forward_transition_model.init(_rng, init_transition)
+        backward_transition_model_params = load_pkl_object("backward_model.pkl")[
+            "params"
+        ]  # backward_transition_model.init(_rng, init_transition)
         # backward_transition_model_params = backward_transition_model.init(
         #     _rng, init_transition
         # )
@@ -109,15 +114,12 @@ def make_train(config):
             )
         else:
             tx = optax.chain(
-                optax.clip_by_global_norm(max_grad_norm),
-                optax.adam(lr, eps=1e-5),
+                optax.clip_by_global_norm(max_grad_norm), optax.adam(lr, eps=1e-5),
             )
         tx_forward_transition_model = optax.adam(learning_rate=transition_model_lr)
         tx_backward_transition_model = optax.adam(learning_rate=transition_model_lr)
         train_state = TrainState.create(
-            apply_fn=network.apply,
-            params=network_params,
-            tx=tx,
+            apply_fn=network.apply, params=network_params, tx=tx,
         )
         forward_transition_model_train_state = TrainState.create(
             apply_fn=forward_transition_model.apply,
@@ -246,8 +248,7 @@ def make_train(config):
 
             def _update_epoch_transition_model(update_state, unused):
                 def _update_minbatch_forward_transition_model(
-                    forward_transition_model_state,
-                    batch_info,
+                    forward_transition_model_state, batch_info,
                 ):
                     traj_batch, advantages, targets = batch_info
 
@@ -273,10 +274,8 @@ def make_train(config):
                     ) = grad_fn_forward_transition_model(
                         forward_transition_model_state.params, traj_batch
                     )
-                    forward_transition_model_state = (
-                        forward_transition_model_state.apply_gradients(
-                            grads=grads_forward_transition_model
-                        )
+                    forward_transition_model_state = forward_transition_model_state.apply_gradients(
+                        grads=grads_forward_transition_model
                     )
                     return (
                         forward_transition_model_state,
@@ -284,8 +283,7 @@ def make_train(config):
                     )
 
                 def _update_minbatch_backward_transition_model(
-                    backward_transition_model_state,
-                    batch_info,
+                    backward_transition_model_state, batch_info,
                 ):
                     traj_batch, advantages, targets = batch_info
 
@@ -311,10 +309,8 @@ def make_train(config):
                     ) = grad_fn_backward_transition_model(
                         backward_transition_model_state.params, traj_batch
                     )
-                    backward_transition_model_state = (
-                        backward_transition_model_state.apply_gradients(
-                            grads=grads_backward_transition_model
-                        )
+                    backward_transition_model_state = backward_transition_model_state.apply_gradients(
+                        grads=grads_backward_transition_model
                     )
                     return (
                         backward_transition_model_state,
@@ -477,9 +473,7 @@ def make_train(config):
                     shuffled_batch,
                 )
                 train_state, total_loss = jax.lax.scan(
-                    _update_minbatch_network,
-                    train_state,
-                    minibatches,
+                    _update_minbatch_network, train_state, minibatches,
                 )
                 update_state = (
                     train_state,

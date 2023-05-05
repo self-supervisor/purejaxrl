@@ -22,7 +22,7 @@ config = {
     "NUM_ENVS": 4,
     "NUM_STEPS": 128,
     "TOTAL_TIMESTEPS": 5e5,
-    "UPDATE_EPOCHS": 4,
+    "UPDATE_EPOCHS": 8,
     "NUM_MINIBATCHES": 4,
     "GAMMA": 0.99,
     "GAE_LAMBDA": 0.95,
