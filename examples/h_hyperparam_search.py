@@ -63,9 +63,7 @@ def generate_combinations(
 
 
 def main(config):
-    group = config["GROUP"]
-    if group == "not_assigned":
-        group = wandb.util.generate_id()
+    group = wandb.util.generate_id()
 
     print("config", config)
     ent_coef_search = [0.001]
@@ -118,7 +116,7 @@ def main(config):
         clips_eps_combinations,
     ]
 
-    NUMBER_OF_SEEDS = 25
+    NUMBER_OF_SEEDS = 25 
     # num_minibatches_combinations = jnp.ones([81,], dtype=jnp.int32) * 2
 
     rng = jax.random.PRNGKey(NUMBER_OF_SEEDS * len(combinations))
@@ -257,7 +255,6 @@ if __name__ == "__main__":
     parser.add_argument(
         "--TRANSITION_MODEL_LR", type=float, default=config["TRANSITION_MODEL_LR"]
     )
-    parser.add_argument("--GROUP", type=str, default="not_assigned")
     args = parser.parse_args()
     config.update(vars(args))
 
