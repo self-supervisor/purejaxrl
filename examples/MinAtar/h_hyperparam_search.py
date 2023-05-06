@@ -3,7 +3,7 @@ import jax
 print("jax devices", jax.devices())
 import jax.numpy as jnp
 import time
-from train import make_train
+from h_train import make_train
 import matplotlib.pyplot as plt
 import numpy as np
 from itertools import product
@@ -63,9 +63,7 @@ def generate_combinations(
 
 
 def main(config):
-    group = config["GROUP"]
-    if group == "not_assigned":
-        group = wandb.util.generate_id()
+    group = wandb.util.generate_id()
 
     print("config", config)
     ent_coef_search = [0.001]
@@ -174,6 +172,7 @@ def main(config):
             .mean(-1)
             .reshape(-1)
         ]
+        list_to_log = list_to_log[::100]
         for a_val_to_log in list_to_log:
             wandb.log({"episode_returns": a_val_to_log})
         wandb.finish()
@@ -265,7 +264,6 @@ if __name__ == "__main__":
     parser.add_argument(
         "--TRANSITION_MODEL_LR", type=float, default=config["TRANSITION_MODEL_LR"]
     )
-    parser.add_argument("--GROUP", type=str, default="not_assigned")
     args = parser.parse_args()
     config.update(vars(args))
 

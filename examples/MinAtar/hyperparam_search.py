@@ -68,18 +68,18 @@ def main(config):
         group = wandb.util.generate_id()
 
     print("config", config)
-    ent_coef_search = [0.001]
-    # ent_coef_search = [config["ENT_COEF"]]
-    lr_search = [0.0025]  # , 0.00025, 0.000025]
-    # lr_search = [config["LR"]]
+    # ent_coef_search = [0.001]
+    ent_coef_search = [config["ENT_COEF"]]
+    # lr_search = [0.0025]  # , 0.00025, 0.000025]
+    lr_search = [config["LR"]]
     transition_model_lr_search = [1e-4]
-    max_grad_norm_search = [0.5]  # [5, 0.5, 0.05]
-    # max_grad_norm_search = [config["MAX_GRAD_NORM"]]
+    # max_grad_norm_search = [0.5]  # [5, 0.5, 0.05]
+    max_grad_norm_search = [config["MAX_GRAD_NORM"]]
     schedule_accelerator_search = [1.0]
     num_envs = [config["NUM_ENVS"]]
     num_minibatches = [config["NUM_MINIBATCHES"]]
-    clip_eps = [0.02]  # [0.02, 0.2, 2]
-    # clip_eps = [config["CLIP_EPS"]]
+    # clip_eps = [0.02]  # [0.02, 0.2, 2]
+    clip_eps = [config["CLIP_EPS"]]
     (
         lr_combinations,
         ent_coef_combinations,
@@ -174,6 +174,7 @@ def main(config):
             .mean(-1)
             .reshape(-1)
         ]
+        list_to_log = list_to_log[::100]
         for a_val_to_log in list_to_log:
             wandb.log({"episode_returns": a_val_to_log})
         wandb.finish()

@@ -118,7 +118,7 @@ def main(config):
         clips_eps_combinations,
     ]
 
-    NUMBER_OF_SEEDS = 10
+    NUMBER_OF_SEEDS = 1000
     # num_minibatches_combinations = jnp.ones([81,], dtype=jnp.int32) * 2
 
     rng = jax.random.PRNGKey(NUMBER_OF_SEEDS * len(combinations))
