@@ -6,38 +6,14 @@ import jax.numpy as jnp
 import optax
 from flax.training.train_state import TrainState
 from gymnax.wrappers.purerl import FlattenObservationWrapper, LogWrapper
-
+import os
 from utils import (
     HActorCritic,
     Transition,
     TransitionModel,
     hard_coded_forwards_backwards_model,
+    load_pkl_object,
 )
-
-# from gymnax code
-def save_pkl_object(obj, filename):
-    """Helper to store pickle objects."""
-    import pickle
-    from pathlib import Path
-
-    output_file = Path(filename)
-    output_file.parent.mkdir(exist_ok=True, parents=True)
-
-    with open(filename, "wb") as output:
-        # Overwrites any existing file.
-        pickle.dump(obj, output, pickle.HIGHEST_PROTOCOL)
-
-    print(f"Stored data at {filename}.")
-
-
-def load_pkl_object(filename: str):
-    """Helper to reload pickle objects."""
-    import pickle
-
-    with open(filename, "rb") as input:
-        obj = pickle.load(input)
-    print(f"Loaded data from {filename}.")
-    return obj
 
 
 def make_train(config):
@@ -98,6 +74,12 @@ def make_train(config):
         # state_dim=env.observation_space(env_params).shape[0]
         rng, _rng = jax.random.split(rng)
         init_x = jnp.zeros(env.observation_space(env_params).shape)
+        # if os.path.exists("/home/augustine/code/purejaxrl/examples/MinAtar/params.pkl"):
+        #     network_params = load_pkl_object("params.pkl")["params"]
+        #     # import ipdb
+
+        #     # ipdb.set_trace()
+        # else:
         network_params = network.init(_rng, init_x, init_x)
         init_transition = jnp.zeros(
             (env.obs_shape[0] * env.obs_shape[1] * env.obs_shape[2]),

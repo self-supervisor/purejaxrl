@@ -7,6 +7,9 @@ import jax.numpy as jnp
 import numpy as np
 from flax.linen.initializers import constant, orthogonal
 
+import gymnax
+from gymnax.wrappers.purerl import FlattenObservationWrapper, LogWrapper
+
 
 class HActorCritic(nn.Module):
     action_dim: Sequence[int]
@@ -260,3 +263,123 @@ class Transition(NamedTuple):
     obs: jnp.ndarray
     next_obs: jnp.ndarray
     info: jnp.ndarray
+
+
+def make_env(env_name):
+    env, env_params = gymnax.make("Asterix-MinAtar")
+    env = FlattenObservationWrapper(env)
+    env = LogWrapper(env)
+    return env, env_params
+
+
+def make_initialised_model(env, env_params, rng: jax.random.PRNGKey):
+    network = ActorCritic(env.action_space(env_params).n, activation="relu")
+    init_x = jnp.zeros(env.observation_space(env_params).shape)
+    network_params = network.init(rng, init_x)
+    return network, network_params
+
+
+def replace_params_with_trained_params(network, random_params, trained_params):
+    from flax.core import freeze, unfreeze
+
+    random_params = unfreeze(random_params)
+    for first_key in random_params["params"].keys():
+        for second_key in random_params["params"][first_key].keys():
+            assert (
+                random_params["params"][first_key][second_key].shape
+                == trained_params["params"][first_key][second_key][0][0].shape
+            ), f"Shape mismatch for {first_key}/{second_key}: {random_params['params'][first_key][second_key].shape} vs {trained_params['params'][first_key][second_key][0][0].shape}"
+            random_params["params"][first_key][second_key] = trained_params["params"][
+                first_key
+            ][second_key][0][0]
+
+    random_params = freeze(random_params)
+    return random_params
+
+
+def rollout(rng_input, network, policy_params, env, env_params, steps_in_episode=1000):
+    """from gymnax examples: Rollout a jitted gymnax episode with lax.scan."""
+    # Reset the environment
+    rng_reset, rng_episode = jax.random.split(rng_input)
+    obs, state = env.reset(rng_reset, env_params)
+
+    def policy_step(state_input, tmp):
+        """lax.scan compatible step transition in jax env."""
+        obs, state, policy_params, rng = state_input
+        rng, rng_step, rng_net = jax.random.split(rng, 3)
+        dist, value = network.apply(policy_params, obs)
+        action = dist.sample(seed=rng_net)
+        next_obs, next_state, reward, done, _ = env.step(
+            rng_step, state, action, env_params
+        )
+        carry = [next_obs, next_state, policy_params, rng]
+        return carry, [obs, action, reward, next_obs, done]
+
+    # Scan over episode step loop
+    _, scan_out = jax.lax.scan(
+        policy_step, [obs, state, policy_params, rng_episode], (), steps_in_episode
+    )
+    # Return masked sum of rewards accumulated by agent in episode
+    obs, action, reward, next_obs, done = scan_out
+    return obs, action, reward, next_obs, done
+
+
+def collect_episodes(network, params, num_episodes, rng, env, env_params):
+    rng_batch = jax.random.split(rng, num_episodes)
+    batch_rollout = jax.vmap(rollout, in_axes=(0, None, None, None, None))
+    outputs = batch_rollout(rng_batch, network, params, env, env_params)
+    all_actions = np.array(outputs[1].reshape(-1))
+    all_states = np.array(outputs[0].reshape(-1, 400))
+    all_next_states = np.array(outputs[3].reshape(-1, 400))
+    return all_states, all_actions, all_next_states
+
+
+def make_train_data(
+    rng: jax.random.PRNGKey,
+    num_episodes: int,
+    params_path: str = "params.pkl",
+    env_name: str = "Asterix-MinAtar",
+):
+    import datetime
+
+    env, env_params = make_env(env_name=env_name)
+    trained_params = load_pkl_object(params_path)["params"]
+    network, random_params = make_initialised_model(env, env_params, rng)
+    params = replace_params_with_trained_params(network, random_params, trained_params)
+    all_states, all_actions, all_next_states = collect_episodes(
+        network, params, num_episodes, rng, env, env_params
+    )
+
+    timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    np.savez(
+        f"model_data/train_data_{timestamp}.npz",
+        states=all_states,
+        actions=all_actions,
+        next_states=all_next_states,
+    )
+
+
+# from gymnax code
+def save_pkl_object(obj, filename):
+    """Helper to store pickle objects."""
+    import pickle
+    from pathlib import Path
+
+    output_file = Path(filename)
+    output_file.parent.mkdir(exist_ok=True, parents=True)
+
+    with open(filename, "wb") as output:
+        # Overwrites any existing file.
+        pickle.dump(obj, output, pickle.HIGHEST_PROTOCOL)
+
+    print(f"Stored data at {filename}.")
+
+
+def load_pkl_object(filename: str):
+    """Helper to reload pickle objects."""
+    import pickle
+
+    with open(filename, "rb") as input:
+        obj = pickle.load(input)
+    print(f"Loaded data from {filename}.")
+    return obj

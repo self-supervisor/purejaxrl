@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from itertools import product
 import wandb
+from utils import save_pkl_object, make_train_data
 
 
 def generate_combinations(
@@ -116,18 +117,33 @@ def main(config):
         clips_eps_combinations,
     ]
 
-    NUMBER_OF_SEEDS = 10
+    NUMBER_OF_SEEDS = 1
     # num_minibatches_combinations = jnp.ones([81,], dtype=jnp.int32) * 2
 
-    rng = jax.random.PRNGKey(NUMBER_OF_SEEDS * len(combinations))
-    rngs = jax.random.split(rng, NUMBER_OF_SEEDS)
+    initial_num_of_timesteps = config["TOTAL_TIMESTEPS"]
+    for i in range(10):
+        config["TOTAL_TIMESTEPS"] = (initial_num_of_timesteps // 10) * (i + 1)
+        print("config", config)
+        rng = jax.random.PRNGKey(NUMBER_OF_SEEDS * len(combinations))
+        rngs = jax.random.split(rng, NUMBER_OF_SEEDS)
 
-    train_vvjit = jax.jit(
-        jax.vmap(jax.vmap(make_train(config), in_axes=(None, 0)), in_axes=(0, None))
-    )
-    t0 = time.time()
-    outs = jax.block_until_ready(train_vvjit(combinations, rngs))
-    print(f"time: {time.time() - t0:.2f} s")
+        train_vvjit = jax.jit(
+            jax.vmap(jax.vmap(make_train(config), in_axes=(None, 0)), in_axes=(0, None))
+        )
+        t0 = time.time()
+        outs = jax.block_until_ready(train_vvjit(combinations, rngs))
+        save_pkl_object({"params": outs["runner_state"][0].params}, "params.pkl")
+        print(f"time: {time.time() - t0:.2f} s")
+        rng, train_data_rng = jax.random.split(rng)
+
+        t0 = time.time()
+        make_train_data(
+            train_data_rng,
+            num_episodes=100,
+            params_path="params.pkl",
+            env_name="Asterix-MinAtar",
+        )
+        print(f"time collecting data: {time.time() - t0:.2f} s")
 
     dict_outs = {}
     combinations = jnp.stack(combinations, axis=1)
@@ -172,7 +188,7 @@ def main(config):
             .mean(-1)
             .reshape(-1)
         ]
-        list_to_log = list_to_log[::100]
+        list_to_log = list_to_log[::1000]
         for a_val_to_log in list_to_log:
             wandb.log({"episode_returns": a_val_to_log})
         wandb.finish()
