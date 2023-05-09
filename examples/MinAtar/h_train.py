@@ -10,9 +10,10 @@ import os
 from utils import (
     HActorCritic,
     Transition,
-    TransitionModel,
-    hard_coded_forwards_backwards_model,
+    equivalent_state_with_model,
     load_pkl_object,
+    TransitionModel,
+    build_forwards_backwards_model,
 )
 
 
@@ -68,34 +69,15 @@ def make_train(config):
         network = HActorCritic(
             env.action_space(env_params).n, activation=config["ACTIVATION"]
         )
-        forward_transition_model = TransitionModel()
-        # state_dim=env.observation_space(env_params).shape[0]
-        backward_transition_model = TransitionModel()
-        # state_dim=env.observation_space(env_params).shape[0]
+        (
+            forward_transition_model,
+            forward_transition_model_params,
+            backward_transition_model,
+            backward_transition_model_params,
+        ) = build_forwards_backwards_model()
         rng, _rng = jax.random.split(rng)
         init_x = jnp.zeros(env.observation_space(env_params).shape)
-        # if os.path.exists("/home/augustine/code/purejaxrl/examples/MinAtar/params.pkl"):
-        #     network_params = load_pkl_object("params.pkl")["params"]
-        #     # import ipdb
-
-        #     # ipdb.set_trace()
-        # else:
         network_params = network.init(_rng, init_x, init_x)
-        init_transition = jnp.zeros(
-            (env.obs_shape[0] * env.obs_shape[1] * env.obs_shape[2]),
-        )
-        forward_transition_model_params = forward_transition_model.init(
-            _rng, init_transition
-        )
-        # forward_transition_model_params = load_pkl_object("forward_model.pkl")[
-        #     "params"
-        # ]  # forward_transition_model.init(_rng, init_transition)
-        # backward_transition_model_params = load_pkl_object("backward_model.pkl")[
-        #     "params"
-        # ]  # backward_transition_model.init(_rng, init_transition)
-        backward_transition_model_params = backward_transition_model.init(
-            _rng, init_transition
-        )
         if config["ANNEAL_LR"]:
             tx = optax.chain(
                 optax.clip_by_global_norm(max_grad_norm),
@@ -148,8 +130,19 @@ def make_train(config):
                 log_prob = pi.log_prob(action_test)
 
                 # GET VALUE
-                equivalent_obs = hard_coded_forwards_backwards_model(
-                    last_obs, action_test
+                # equivalent_obs = hard_coded_forwards_backwards_model(
+                #     last_obs, action_test
+                # )
+                # actions_one_hot = jax.nn.one_hot(action_test, num_classes=5)
+                # inputs = jnp.concatenate([last_obs, actions_one_hot], axis=1)
+
+                equivalent_obs = equivalent_state_with_model(
+                    forward_transition_model,
+                    forward_transition_model_state.params,
+                    backward_transition_model,
+                    backward_transition_model_state.params,
+                    last_obs,
+                    action_test,
                 )
                 # equivalent_obs = jnp.concatenate(
                 #     [last_obs, jnp.expand_dims(action_test, axis=1)], axis=1
@@ -370,9 +363,13 @@ def make_train(config):
                     traj_batch, advantages, targets = batch_info
 
                     def _loss_fn(params, traj_batch, gae, targets):
-                        # action_test = traj_batch.action
-                        equivalent_obs = hard_coded_forwards_backwards_model(
-                            traj_batch.obs, traj_batch.action
+                        equivalent_obs = equivalent_state_with_model(
+                            forward_transition_model,
+                            forward_transition_model_params,
+                            backward_transition_model,
+                            backward_transition_model_params,
+                            traj_batch.obs,
+                            traj_batch.action,
                         )
 
                         # equivalent_obs = jnp.concatenate(

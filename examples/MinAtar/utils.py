@@ -59,8 +59,158 @@ class HActorCritic(nn.Module):
         return pi, jnp.squeeze(critic, axis=-1)
 
 
-@jax.jit
-def hard_coded_forwards_backwards_model(obs, action):
+def build_forwards_backwards_model():
+    import torch
+
+    forward_model = TransitionModel()
+    forward_model_params = forward_model.init(jax.random.PRNGKey(0), jnp.ones((1, 425)))
+
+    forward_weights = torch.load("forward.pt")
+
+    from flax.core.frozen_dict import freeze
+
+    forward_model_params = forward_model_params.unfreeze()
+    assert (
+        forward_model_params["params"]["Dense_0"]["kernel"].shape
+        == forward_weights["fc1.weight"].T.shape
+    )
+    forward_model_params["params"]["Dense_0"]["kernel"] = (
+        forward_weights["fc1.weight"].T.cpu().detach().numpy()
+    )
+    assert (
+        forward_model_params["params"]["Dense_1"]["kernel"].shape
+        == forward_weights["fc2.weight"].T.shape
+    )
+    forward_model_params["params"]["Dense_1"]["kernel"] = (
+        forward_weights["fc2.weight"].T.cpu().detach().numpy()
+    )
+    assert (
+        forward_model_params["params"]["Dense_2"]["kernel"].shape
+        == forward_weights["fc4.weight"].T.shape
+    )
+    forward_model_params["params"]["Dense_2"]["kernel"] = (
+        forward_weights["fc4.weight"].T.cpu().detach().numpy()
+    )
+
+    assert (
+        forward_model_params["params"]["Dense_0"]["bias"].shape
+        == forward_weights["fc1.bias"].shape
+    )
+    forward_model_params["params"]["Dense_0"]["bias"] = (
+        forward_weights["fc1.bias"].cpu().detach().numpy()
+    )
+    assert (
+        forward_model_params["params"]["Dense_1"]["bias"].shape
+        == forward_weights["fc2.bias"].shape
+    )
+    forward_model_params["params"]["Dense_1"]["bias"] = (
+        forward_weights["fc2.bias"].cpu().detach().numpy()
+    )
+    assert (
+        forward_model_params["params"]["Dense_2"]["bias"].shape
+        == forward_weights["fc4.bias"].shape
+    )
+    forward_model_params["params"]["Dense_2"]["bias"] = (
+        forward_weights["fc4.bias"].cpu().detach().numpy()
+    )
+    forward_model_params = freeze(forward_model_params)
+
+    backward_model = TransitionModel()
+    # init flax model
+    backward_model_params = backward_model.init(
+        jax.random.PRNGKey(0), jnp.ones((1, 425))
+    )
+
+    backward_weights = torch.load("backward.pt")
+
+    from flax.core.frozen_dict import freeze
+
+    backward_model_params = backward_model_params.unfreeze()
+    assert (
+        backward_model_params["params"]["Dense_0"]["kernel"].shape
+        == backward_weights["fc1.weight"].T.shape
+    )
+    backward_model_params["params"]["Dense_0"]["kernel"] = (
+        backward_weights["fc1.weight"].T.cpu().detach().numpy()
+    )
+    assert (
+        backward_model_params["params"]["Dense_1"]["kernel"].shape
+        == backward_weights["fc2.weight"].T.shape
+    )
+    backward_model_params["params"]["Dense_1"]["kernel"] = (
+        backward_weights["fc2.weight"].T.cpu().detach().numpy()
+    )
+    assert (
+        backward_model_params["params"]["Dense_2"]["kernel"].shape
+        == backward_weights["fc4.weight"].T.shape
+    )
+    backward_model_params["params"]["Dense_2"]["kernel"] = (
+        backward_weights["fc4.weight"].T.cpu().detach().numpy()
+    )
+
+    assert (
+        backward_model_params["params"]["Dense_0"]["bias"].shape
+        == backward_weights["fc1.bias"].shape
+    )
+    backward_model_params["params"]["Dense_0"]["bias"] = (
+        backward_weights["fc1.bias"].cpu().detach().numpy()
+    )
+    assert (
+        backward_model_params["params"]["Dense_1"]["bias"].shape
+        == backward_weights["fc2.bias"].shape
+    )
+    backward_model_params["params"]["Dense_1"]["bias"] = (
+        backward_weights["fc2.bias"].cpu().detach().numpy()
+    )
+    assert (
+        backward_model_params["params"]["Dense_2"]["bias"].shape
+        == backward_weights["fc4.bias"].shape
+    )
+    backward_model_params["params"]["Dense_2"]["bias"] = (
+        backward_weights["fc4.bias"].cpu().detach().numpy()
+    )
+    backward_model_params = freeze(backward_model_params)
+    return forward_model, forward_model_params, backward_model, backward_model_params
+
+
+def equivalent_state_with_model(
+    forward_model,
+    forward_model_params,
+    backward_model,
+    backward_model_params,
+    obs,
+    action,
+):
+    # inputs = jnp.concatenate(
+    #     [
+    #         obs,
+    #         jnp.repeat(jax.nn.one_hot(action, num_classes=5), repeats=5).reshape(
+    #             -1, 25
+    #         ),
+    #     ],
+    #     axis=1,
+    # )
+    # pred_next_state = forward_model.apply(forward_model_params, inputs)
+    # pred_next_state = jnp.concatenate(
+    #     [
+    #         pred_next_state,
+    #         jnp.repeat(
+    #             jnp.repeat(jnp.array([1, 0, 0, 0, 0],), repeats=5).reshape(-1, 25),
+    #             repeats=pred_next_state.shape[0],
+    #             axis=0,
+    #         ),
+    #     ],
+    #     axis=1,
+    # )
+    # equivalent_state = backward_model.apply(backward_model_params, pred_next_state)
+    # return equivalent_state
+
+    # import jax.numpy as jnp
+
+    # jax.debug.breakpoint()
+    # obs = inputs[:, :400]
+    # action = jnp.argmax(inputs[:, 400:405], axis=1)
+    # jax.debug.print("action {action}", action=action)
     obs = obs.reshape(-1, 4, 10, 10)
     equivalent_obs_0 = obs.copy()
     equivalent_obs_1 = obs.copy()
@@ -227,31 +377,41 @@ class ActorCritic(nn.Module):
 #         return pred
 
 
+# class TransitionModel(nn.Module):
+#     @nn.compact
+#     def __call__(self, inputs):
+#         if len(inputs.shape) == 1:
+#             # inputs /= jnp.array([10, 1, 1, 1, 1])
+#             # inputs /= jnp.array([10, 1, 1, 1, 1])
+#             x_0 = nn.Dense(4)(inputs[:-1])
+#             x_1 = nn.Dense(4)(inputs[:-1])
+#             x_1 *= inputs[-1:]  # if zero == 0, if one == 1
+#             x_0 *= (inputs[-1:] - 1) ** 2  # if zero == 1, if one == 0
+#             pred = x_0 + x_1
+#         else:
+#             # inputs /= jnp.array([10, 1, 1, 1, 1])
+#             # inputs /= jnp.array([10, 1, 1, 1, 1])
+#             x_0 = nn.Dense(4)(inputs[:, :-1])
+#             x_1 = nn.Dense(4)(inputs[:, :-1])
+#             x_1 *= inputs[:, -1:]  # if zero == 0, if one == 1
+#             x_0 *= (inputs[:, -1:] - 1) ** 2  # if zero == 1, if one == 0
+#             pred = x_0 + x_1
+#         # inputs /= jnp.array([10, 1, 1, 1, 1])
+#         # x = nn.relu(nn.Dense(256)(inputs))
+#         # x = nn.relu(nn.Dense(256)(x))
+#         # x = nn.relu(nn.Dense(256)(x))
+#         # pred = nn.Dense(4)(x)
+#         return pred
+
+
 class TransitionModel(nn.Module):
     @nn.compact
     def __call__(self, inputs):
-        if len(inputs.shape) == 1:
-            # inputs /= jnp.array([10, 1, 1, 1, 1])
-            # inputs /= jnp.array([10, 1, 1, 1, 1])
-            x_0 = nn.Dense(4)(inputs[:-1])
-            x_1 = nn.Dense(4)(inputs[:-1])
-            x_1 *= inputs[-1:]  # if zero == 0, if one == 1
-            x_0 *= (inputs[-1:] - 1) ** 2  # if zero == 1, if one == 0
-            pred = x_0 + x_1
-        else:
-            # inputs /= jnp.array([10, 1, 1, 1, 1])
-            # inputs /= jnp.array([10, 1, 1, 1, 1])
-            x_0 = nn.Dense(4)(inputs[:, :-1])
-            x_1 = nn.Dense(4)(inputs[:, :-1])
-            x_1 *= inputs[:, -1:]  # if zero == 0, if one == 1
-            x_0 *= (inputs[:, -1:] - 1) ** 2  # if zero == 1, if one == 0
-            pred = x_0 + x_1
-        # inputs /= jnp.array([10, 1, 1, 1, 1])
-        # x = nn.relu(nn.Dense(256)(inputs))
-        # x = nn.relu(nn.Dense(256)(x))
-        # x = nn.relu(nn.Dense(256)(x))
-        # pred = nn.Dense(4)(x)
-        return pred
+        x = nn.relu(nn.Dense(4096)(inputs))
+        x = nn.relu(nn.Dense(4096)(x))
+        x = nn.Dense(400)(x)
+        x = nn.sigmoid(x)
+        return x
 
 
 class Transition(NamedTuple):
