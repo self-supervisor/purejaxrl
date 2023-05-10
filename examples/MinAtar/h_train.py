@@ -10,8 +10,8 @@ from gymnax.wrappers.purerl import FlattenObservationWrapper, LogWrapper
 from utils import (
     HActorCritic,
     Transition,
-    TransitionModel,
-    hard_coded_forwards_backwards_model,
+    build_forwards_backwards_model,
+    equivalent_state_with_model,
 )
 
 # from gymnax code
@@ -92,28 +92,35 @@ def make_train(config):
         network = HActorCritic(
             env.action_space(env_params).n, activation=config["ACTIVATION"]
         )
-        forward_transition_model = TransitionModel()
+        # forward_transition_model = TransitionModel()
         # state_dim=env.observation_space(env_params).shape[0]
-        backward_transition_model = TransitionModel()
+        # backward_transition_model = TransitionModel()
         # state_dim=env.observation_space(env_params).shape[0]
         rng, _rng = jax.random.split(rng)
         init_x = jnp.zeros(env.observation_space(env_params).shape)
         network_params = network.init(_rng, init_x, init_x)
-        init_transition = jnp.zeros(
-            (env.obs_shape[0] * env.obs_shape[1] * env.obs_shape[2]),
-        )
-        forward_transition_model_params = forward_transition_model.init(
-            _rng, init_transition
-        )
+        rng, rng_forward, rng_backward = jax.random.split(rng, 3)
+        (
+            forward_transition_model,
+            forward_transition_model_params,
+            backward_transition_model,
+            backward_transition_model_params,
+        ) = build_forwards_backwards_model(rng_forward, rng_backward)
+        # init_transition = jnp.zeros(
+        #     (env.obs_shape[0] * env.obs_shape[1] * env.obs_shape[2]),
+        # )
+        # forward_transition_model_params = forward_transition_model.init(
+        #     _rng, init_transition
+        # )
         # forward_transition_model_params = load_pkl_object("forward_model.pkl")[
         #     "params"
         # ]  # forward_transition_model.init(_rng, init_transition)
         # backward_transition_model_params = load_pkl_object("backward_model.pkl")[
         #     "params"
         # ]  # backward_transition_model.init(_rng, init_transition)
-        backward_transition_model_params = backward_transition_model.init(
-            _rng, init_transition
-        )
+        # backward_transition_model_params = backward_transition_model.init(
+        #     _rng, init_transition
+        # )
         if config["ANNEAL_LR"]:
             tx = optax.chain(
                 optax.clip_by_global_norm(max_grad_norm),
@@ -166,9 +173,15 @@ def make_train(config):
                 log_prob = pi.log_prob(action_test)
 
                 # GET VALUE
-                equivalent_obs = hard_coded_forwards_backwards_model(
-                    last_obs, action_test
+                equivalent_obs = equivalent_state_with_model(
+                    forward_transition_model,
+                    forward_transition_model_params,
+                    backward_transition_model,
+                    backward_transition_model_params,
+                    last_obs,
+                    action_test,
                 )
+                # equivalent_obs = equivalent_state_with_model()
                 # equivalent_obs = jnp.concatenate(
                 #     [last_obs, jnp.expand_dims(action_test, axis=1)], axis=1
                 # )
@@ -263,13 +276,24 @@ def make_train(config):
                     traj_batch, advantages, targets = batch_info
 
                     def _loss_fn_forward_transition_model(forward_params, traj_batch):
+
                         inputs = jnp.concatenate(
                             [
                                 traj_batch.obs,
-                                jnp.expand_dims(traj_batch.action, axis=1),
+                                jnp.repeat(
+                                    jax.nn.one_hot(traj_batch.action, num_classes=5),
+                                    repeats=5,
+                                ).reshape(-1, 25),
                             ],
-                            axis=-1,
+                            axis=1,
                         )
+                        # inputs = jnp.concatenate(
+                        #     [
+                        #         traj_batch.obs,
+                        #         jnp.expand_dims(traj_batch.action, axis=1),
+                        #     ],
+                        #     axis=-1,
+                        # )
                         preds = forward_transition_model.apply(forward_params, inputs)
                         targets = traj_batch.next_obs
                         loss = jnp.square(preds - targets).mean()
@@ -301,9 +325,12 @@ def make_train(config):
                         inputs = jnp.concatenate(
                             [
                                 traj_batch.next_obs,
-                                jnp.expand_dims(traj_batch.action, axis=1),
+                                jnp.repeat(
+                                    jax.nn.one_hot(traj_batch.action, num_classes=5),
+                                    repeats=5,
+                                ).reshape(-1, 25),
                             ],
-                            axis=-1,
+                            axis=1,
                         )
                         preds = forward_transition_model.apply(backward_params, inputs)
                         targets = traj_batch.obs
@@ -370,7 +397,7 @@ def make_train(config):
                     backward_transition_model_state,
                     minibatches_transition_model,
                 )
-                jax.debug.print("total_loss: {total_loss}", total_loss=total_loss)
+                # jax.debug.print("total_loss: {total_loss}", total_loss=total_loss)
                 update_state = (
                     train_state,
                     forward_transition_model_state,
@@ -389,10 +416,18 @@ def make_train(config):
 
                     def _loss_fn(params, traj_batch, gae, targets):
                         # action_test = traj_batch.action
-                        equivalent_obs = hard_coded_forwards_backwards_model(
-                            traj_batch.obs, traj_batch.action
-                        )
+                        # equivalent_obs = hard_coded_forwards_backwards_model(
+                        #     traj_batch.obs, traj_batch.action
+                        # )
 
+                        equivalent_obs = equivalent_state_with_model(
+                            forward_transition_model,
+                            forward_transition_model_params,
+                            backward_transition_model,
+                            backward_transition_model_params,
+                            traj_batch.obs,
+                            traj_batch.action,
+                        )
                         # equivalent_obs = jnp.concatenate(
                         #     [traj_batch.obs, jnp.expand_dims(action_test, axis=1)],
                         #     axis=1,
@@ -516,14 +551,14 @@ def make_train(config):
             # update_multiplier  = 1
             # update_multiplier = 128
             # updater = jax.lax.cond(count > 10, lambda x: x * update_multiplier, lambda x: x)
-
             # update_multiplier = jax.lax.select(count > 10.0, 128, 0)
-            # update_state, _ = jax.lax.scan(
-            #     _update_epoch_transition_model,
-            #     update_state,
-            #     None,
-            #     config["UPDATE_EPOCHS"] * 0,
-            # )
+
+            update_state, _ = jax.lax.scan(
+                _update_epoch_transition_model,
+                update_state,
+                None,
+                config["UPDATE_EPOCHS"] * 10,
+            )
             train_state = update_state[0]
             metric = traj_batch.info
             rng = update_state[-1]
